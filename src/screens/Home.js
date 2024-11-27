@@ -1,25 +1,23 @@
+import React, { useEffect, useState } from 'react';
 import {
-  View,
-  Text,
-  Platform,
   Alert,
-  PermissionsAndroid,
-  FlatList,
   Button,
+  PermissionsAndroid,
+  Platform,
+  Text,
+  View,
 } from 'react-native';
-import React, {useEffect, useState} from 'react';
-import {manager} from './BluetoothManager';
 import {
   arcusDeviceUUID,
   krakenDeviceUUID,
   KrakenUUIDs,
 } from '../kraken/KrakenUUIDs';
-import {bytesToString} from 'convert-string';
+import { manager } from './BluetoothManager';
+import { bytesToString } from 'convert-string';
 
 const Home = () => {
   const [deviceList, setDeviceList] = useState([]);
-
-
+  console.log('deviceList---->', deviceList)
   const [selectedSection, setSelectedSection] = useState('Kraken');
 
   // Request Bluetooth permission
@@ -70,7 +68,7 @@ const Home = () => {
   }, []);
 
   // Start scanning once Bluetooth is powered on
-  React.useEffect(() => {
+  useEffect(() => {
     const subscription = manager.onStateChange(state => {
       if (state === 'PoweredOn') {
         scanAndConnect();
@@ -81,107 +79,163 @@ const Home = () => {
   }, [manager]);
 
   // Scan for devices and connect
-  function scanAndConnect() {
-    manager.startDeviceScan(null, null, (error, device) => {
-      if (error) {
+  async function scanAndConnect() {
+  
+    manager.startDeviceScan([], { allowDuplicates: false }, async (error, device) => {
+
+      if(error){
         return;
       }
-
       const isKraken =
         device.serviceUUIDs && device.serviceUUIDs.includes(krakenDeviceUUID);
-      const isArcus =
-        device.serviceUUIDs && device.serviceUUIDs.includes(arcusDeviceUUID);
 
-      if (isKraken || isArcus) {
-        device
-          .connect()
-          .then(device => device.discoverAllServicesAndCharacteristics())
-          .then(device => {
-            return device.readCharacteristicForService('180F', '2A19');
-          })
-          .then(deviceResult => {
-            const convertedValue = Uint8Array.from(
-              atob(deviceResult.value),
-              c => c.charCodeAt(0),
+        if (device.name == null || device.localName == null) {
+          return;
+        }
+        if(isKraken){
+          try {
+            let isConnectedDevice = await device.isConnected();
+          if(isConnectedDevice){
+            connectDeviceInfo(device)
+          }else{
+            let  connectDevice = await device.connect();
+            connectDeviceInfo(connectDevice)
+            
+
+          }
+
+          } catch (error) {
+            
+          }
+       
+        }
+    })
+ 
+  }
+
+
+  const connectDeviceInfo =  async(device) => {
+    let deviceInfo = await device.discoverAllServicesAndCharacteristics();
+
+    if(deviceInfo){
+  
+    
+      let getDevicedetails = await deviceInfo.readCharacteristicForService('180F','2A19');
+    
+    if(getDevicedetails){
+
+      const convertedValue = Uint8Array.from(
+        atob(getDevicedetails.value),
+        c => c.charCodeAt(0),
+      );
+      const batteryStatus = getBatteryReading(convertedValue[0]);
+
+
+      const myData = manager.monitorCharacteristicForDevice(
+        getDevicedetails?.deviceID,
+        krakenDeviceUUID,
+        KrakenUUIDs.devicePressureSubscriptionCharacteristicUUID,
+        (error, characteristic) => {
+       
+          const krakenData = readDeviceSubscriptionData(characteristic);
+
+          // Update deviceList based on Kraken/Arcus data
+          setDeviceList(prevDeviceList => {
+            const updatedDeviceList = [...prevDeviceList];
+
+            const existingDeviceIndex = updatedDeviceList.findIndex(
+              d => d.deviceId === device.id,
             );
-            const batteryStatus = getBatteryReading(convertedValue[0]);
+  
 
-            const myData = manager.monitorCharacteristicForDevice(
-              deviceResult?.deviceID,
-              krakenDeviceUUID,
-              KrakenUUIDs.devicePressureSubscriptionCharacteristicUUID,
-              (error, characteristic) => {
-                const krakenData = readDeviceSubscriptionData(characteristic);
-
-                // Update deviceList based on Kraken/Arcus data
-                setDeviceList(prevDeviceList => {
-                  const updatedDeviceList = [...prevDeviceList];
-
-                  const existingDeviceIndex = updatedDeviceList.findIndex(
-                    d => d.deviceId === device.id,
-                  );
-                  console.log('Device info:', {
-                    deviceId: device.id,
-                    name: device.name,
-                    battery: batteryStatus,
-                    signalStrength: device.rssi,
-                    krakenName: krakenData.name,
-                    pressure: krakenData.pressure,
-                    isKraken,
-                    isArcus,
-                  });
-
-                  const newDevice = generateDeviceInformationObject(
-                    device.id,
-                    device.name,
-                    batteryStatus,
-                    device.rssi,
-                    krakenData.name,
-                    krakenData.pressure,
-                    isKraken,
-                    isArcus,
-                  );
-
-                  if (existingDeviceIndex === -1) {
-                    updatedDeviceList.push(newDevice);
-                  } else {
-                    updatedDeviceList[existingDeviceIndex] = newDevice;
-                  }
-
-                  return updatedDeviceList;
-                });
-              },
-              deviceResult?.deviceID,
+            const newDevice = generateDeviceInformationObject(
+              device.id,
+              device.name,
+              batteryStatus,
+              krakenData.pressure,
+       
             );
-          })
-          .catch(error => console.log('error', error));
-      }
+
+            if (existingDeviceIndex === -1) {
+              updatedDeviceList.push(newDevice);
+            } else {
+              updatedDeviceList[existingDeviceIndex] = newDevice;
+            }
+
+            return updatedDeviceList;
+          });
+        },
+    
+      );
+    }
+    
+  }
+  }
+
+  function getBatteryReading(value) {
+    let batteryStatus = '';
+    if (value === 255) {
+      batteryStatus = 'Charging..';
+    } else {
+      batteryStatus = `${value}%`;
+    }
+    return batteryStatus;
+  }
+
+  // Update pressure data for a device that already exists in the list
+  function updatePressureForDevice(deviceId, pressure) {
+    // Instead of updating the entire device list, only modify the pressure for the updated device
+    setDeviceList(prevDeviceList => {
+      const updatedList = prevDeviceList.map(device =>
+        device.deviceId === deviceId
+          ? { ...device, pressure: pressure || '?' } // Ensure pressure is updated
+          : device
+      );
+      return updatedList;
     });
   }
 
+  // Update the device list with new devices or existing devices with updated pressure data
+  function updateDeviceList(prevDeviceList, device) {
+    const newDevice = generateDeviceInformationObject(
+      device.id,
+      device.name,
+      device.serviceUUIDs
+    );
+
+    return prevDeviceList.some(d => d.deviceId === device.id)
+      ? prevDeviceList // If device already exists, don't add it again
+      : [...prevDeviceList, newDevice]; // Add new device to list if not present
+  }
+
+  // Generate device information object with default pressure value as '?'
+  function generateDeviceInformationObject(address, name, id,pressure) {
+    return {
+      deviceId: address,
+      deviceName: name,
+      id: id,
+      pressure: pressure, // Initially set to '?' before pressure data is received
+    };
+  }
+
+  // Parse the pressure data from the characteristic
   function readDeviceSubscriptionData(data) {
+
     let readData = Uint8Array.from(atob(data.value), c => c.charCodeAt(0));
 
     let krakenIndex = 0;
-    let name = bin2String(readData.slice(krakenIndex, krakenIndex + 16), 16);
+
     let pressure = readingToPsi(
       readData.slice(krakenIndex + 16, krakenIndex + 21),
-      5,
+      5
     );
 
-    return {name, pressure};
+    return { pressure };
   }
 
-  function bin2String(bytes, len) {
-    let result = '';
-    for (let i = 0; bytes[i] !== 0 && i < len; ++i) {
-      result += String.fromCharCode(parseInt(bytes[i]));
-    }
-
-    return result;
-  }
-
+  // Convert pressure data to PSI format
   function readingToPsi(bytes) {
+
     let pressure = bytesToString(bytes.filter(byte => byte != 0));
 
     pressure = Number.parseInt(pressure).toString();
@@ -198,48 +252,24 @@ const Home = () => {
     return pressure;
   }
 
-  function getBatteryReading(value) {
-    let batteryStatus = '';
-    if (value === 255) {
-      batteryStatus = 'Charging..';
+  // Filter devices based on selected section (Kraken or Arcus)
+  const filterDevices = () => {
+    if (selectedSection === 'Kraken') {
+      return deviceList.filter(device =>
+        device.id?.includes(krakenDeviceUUID)
+      );
+    } else if (selectedSection === 'Arcus') {
+      return deviceList.filter(device =>
+        device.id?.includes(arcusDeviceUUID)
+      );
     } else {
-      batteryStatus = `${value}%`;
+      return deviceList; // Return all devices if no section is selected
     }
-    return batteryStatus;
-  }
-
-  function generateDeviceInformationObject(
-    address,
-    name,
-    batteryStatus,
-    signalStrength,
-    krakenName,
-    pressure,
-    isKraken,
-    isArcus,
-  ) {
-    return {
-      deviceId: address,
-      deviceName: name,
-      battery: batteryStatus,
-      signalStrength,
-      krakenName,
-      pressure,
-      isKraken,
-      isArcus,
-    };
-  }
-
-  // Filter devices that have a valid battery level
-
-  const krakenDevices = deviceList.filter(device => device.isKraken);
-  const arcusDevices = deviceList.filter(device => device.isArcus);
-
-
+  };
 
   return (
-    <View style={{padding: 20}}>
-      <Text style={{fontSize: 24, fontWeight: 'bold'}}>Home</Text>
+    <View style={{ padding: 20 }}>
+
 
       {/* Toggle Buttons for Kraken and Arcus */}
       <View
@@ -253,52 +283,22 @@ const Home = () => {
           onPress={() => setSelectedSection('Kraken')}
           color={selectedSection === 'Kraken' ? 'blue' : 'gray'}
         />
-        <Button
+        {/* <Button
           title="Arcus"
           onPress={() => setSelectedSection('Arcus')}
           color={selectedSection === 'Arcus' ? 'blue' : 'gray'}
-        />
+        /> */}
       </View>
 
-      {/* Conditional Rendering of Sections */}
-      {selectedSection === 'Kraken' && (
-        <View>
-          <Text style={{fontWeight: 'bold', fontSize: 18}}>Kraken Devices</Text>
-          <FlatList
-            data={krakenDevices}
-            keyExtractor={item => item.deviceId}
-            renderItem={({item}) => (
-              <View style={{marginVertical: 5}}>
-                <Text>Address</Text>
-                <Text>{item.deviceId}</Text>
-                <Text>Device Name: {item.deviceName}</Text>
-                <Text>Pressure: {item.pressure}</Text>
-                <Text>Signal Strength: {item.signalStrength}</Text>
-                <Text>Battery: {item.battery}</Text>
-              </View>
-            )}
-          />
+      {/* Display Devices with Pressure Data */}
+      {deviceList.map(item => (
+        <View key={item.deviceId} style={{ marginVertical: 5 }}>
+          <Text>Address: {item.deviceId}</Text>
+          <Text>Device Name: {item.deviceName}</Text>
+          <Text>Battery Status: {item.id}</Text>
+          <Text>Pressure: {item.pressure}</Text>
         </View>
-      )}
-
-      {selectedSection === 'Arcus' && (
-        <View>
-          <Text style={{fontWeight: 'bold', fontSize: 18}}>Arcus Devices</Text>
-          <FlatList
-            data={arcusDevices}
-            keyExtractor={item => item.deviceId}
-            renderItem={({item}) => (
-              <View style={{marginVertical: 5}}>
-                <Text>Address</Text>
-                <Text>{item.deviceId}</Text>
-                <Text>Device Name: {item.deviceName}</Text>
-                <Text>Signal Strength: {item.signalStrength}</Text>
-                <Text>Battery: {item.battery}</Text>
-              </View>
-            )}
-          />
-        </View>
-      )}
+      ))}
     </View>
   );
 };
