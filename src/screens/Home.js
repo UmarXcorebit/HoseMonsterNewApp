@@ -11,7 +11,7 @@ import {
   StyleSheet,
   Pressable,
 } from 'react-native';
-import {krakenDeviceUUID} from '../kraken/KrakenUUIDs';
+import {BleData, ctlStart, krakenDeviceUUID} from '../kraken/KrakenUUIDs';
 import {manager} from '../components/BluetoothManager';
 import PsiComponent from '../components/PsiComponent';
 import { ZeroByteFW } from '@zerobytellc/zerobyte-firmware-utils';
@@ -23,6 +23,7 @@ const Home = () => {
   const [modalVisible, setModalVisible] = useState(false);
   const [selectedDevice, setSelectedDevice] = useState(null);
 
+  var Buffer = require('buffer/').Buffer;
   // Request Bluetooth permissions
   const requestBluetoothPermission = async () => {
     if (Platform.OS === 'ios') return true;
@@ -50,6 +51,8 @@ const Home = () => {
     return false;
   };
 
+
+
   // Request Bluetooth permissions on component mount
   useEffect(() => {
     requestBluetoothPermission();
@@ -60,9 +63,6 @@ const Home = () => {
     const subscription = manager.onStateChange(state => {
       if (state === 'PoweredOn') {
         scanAndConnect();
-        console.log('here we are going to scan...!');
-        // subscription.remove();
-        console.log('here we are going to after...!');
       }
     }, true);
 
@@ -92,13 +92,20 @@ const Home = () => {
 
       if (!isConnected) {
         await manager.connectToDevice(device.id);
-      }
+        const deviceInfo = await device.discoverAllServicesAndCharacteristics();
+        if (deviceInfo) {
+          const batteryStatus = await getBatteryStatus(deviceInfo);
+          updateDeviceList(device, batteryStatus);
+        }
+      }else{
 
-      const deviceInfo = await device.discoverAllServicesAndCharacteristics();
-      if (deviceInfo) {
-        const batteryStatus = await getBatteryStatus(deviceInfo);
-        updateDeviceList(device, batteryStatus);
+        const deviceInfo = await device.discoverAllServicesAndCharacteristics();
+        if (deviceInfo) {
+          const batteryStatus = await getBatteryStatus(deviceInfo);
+          updateDeviceList(device, batteryStatus);
+        }
       }
+   
     } catch (error) {
       manager.onDeviceDisconnected(device.id, (error, device) => {
         if (error) {
@@ -139,7 +146,7 @@ const Home = () => {
         dfuFound: true,
       };
 
-      if (existingDeviceIndex === -1) {
+      if (existingDeviceIndex <= -1) {
         updatedDeviceList.push(newDevice);
       } else {
         updatedDeviceList[existingDeviceIndex] = newDevice;
@@ -169,27 +176,286 @@ const Home = () => {
   
     return modules;
   }
-  const performDFU = async () => {
+//   const performDFU = async () => {
+//   console.log(`Performing firmware update for ${selectedDevice?.deviceName} : ${selectedDevice?.deviceId}`);
+//   let firmwarePaths = await getFirmwareFile('kraken');
+//   //get  path of the file in an array
+//   console.log( "Success Path---->",firmwarePaths);
+
+//   if(firmwarePaths){
+
+  
+//   for (let i = firmwarePaths.length - 1; i >= 0; --i) {
+//     let fileCountMsg = `[${firmwarePaths.length - i} of ${firmwarePaths.length}]`;
+// console.log('fileCountMsg---->', fileCountMsg)
+//     let firmwarePath = firmwarePaths[i];
+//     try {
+//  await manager.cancelDeviceConnection(selectedDevice?.deviceId)
+    
+//     } catch (error) {
+//       console.log("Dis connecting error", error);
+//     }
+
+//   await readFileAndStartFlashing(
+//       deviceId,
+//       firmwarePath,
+//       [firmwarePaths.length - i, firmwarePaths.length],
+//     ).then(result => {
+//      console.log('result', result)
+//     })
+//   }
+// }
+
+//   return result ? 1 : 0;
+//   }
+
+const performDFU = async () => {
   console.log(`Performing firmware update for ${selectedDevice?.deviceName} : ${selectedDevice?.deviceId}`);
   let firmwarePaths = await getFirmwareFile('kraken');
-  //get  path of the file in an array
-  console.log( "Success Path---->",firmwarePaths);
+  console.log("Success Path---->", firmwarePaths);
+
+  if (!firmwarePaths || firmwarePaths.length === 0) {
+    console.log("No firmware paths found.");
+    return 0;
   }
+
+  let result = false;  // Track if any update was successful
+
+  for (let i = firmwarePaths.length - 1; i >= 0; --i) {
+    let fileCountMsg = `[${firmwarePaths.length - i} of ${firmwarePaths.length}]`;
+    console.log('fileCountMsg---->', fileCountMsg);
+    let firmwarePath = firmwarePaths[i];
+
+  
+
+    try {
+      result = await readFileAndStartFlashing(
+        selectedDevice?.deviceId,  // Ensure you're passing the correct deviceId
+        firmwarePath,
+        [firmwarePaths.length - i, firmwarePaths.length]
+      );
+      console.log('Flashing result:', result);
+    } catch (error) {
+      console.log("Flashing error", error);
+      continue;  // Skip to next firmware path if flashing fails
+    }
+  }
+
+  return result ? 1 : 0;
+}
+
+
 
   const readFileAndStartFlashing = async function (
     deviceId,
     firmwarePath,
-    skipReboot,
     steps,
   ) {
+  
+  console.log('firmwarePath---Reading->', firmwarePath)
     let firmwareBytes = await readFirmwareBytes(firmwarePath);
+    console.log('firmwareBytes------->', firmwareBytes)
+    if(firmwareBytes){
+   return beginDFU(
+      deviceId,
+      firmwareBytes,
+      steps,
+    );
+    }
+ 
   };
+
 
   const readFirmwareBytes = async function (filePath) {
+    console.log('filePath', filePath)
     let stats = await RNFetchBlob.fs.stat(`${filePath}`);
-    console.log('stats', stats)
-
+    // console.log(`File stat: ${stats}`);
+    let firmwareSize = stats.size;
+    let firmwareBuffer = new ArrayBuffer(firmwareSize);
+    let firmwareBytes = new Uint8Array(firmwareBuffer);
+    let done = false;
+  
+    if (stats.size > 0) {
+      RNFetchBlob.fs.readStream(filePath, 'ascii').then(stream => {
+        let bytesRead = 0;
+  
+        stream.open();
+        stream.onError(err => {
+          console.log('Error while reading file ', err);
+        });
+        stream.onData(chunk => {
+          firmwareBytes.set(chunk, bytesRead);
+          bytesRead += chunk.length;
+        });
+        stream.onEnd(() => {
+          console.log('Done reading file ');
+          done = true;
+        });
+      });
+  
+      while (!done) {
+        await new Promise(r => setTimeout(r, 100));
+      }
+    }
+  console.log('firmwareBytes------>', firmwareBytes)
+    return firmwareBytes;
   };
+  
+
+  const beginDFU = async function (
+    deviceId,
+    firmwareBytes,
+  
+  ) {
+    let totalBytesWritten = 0;
+  
+    try {
+      console.log('Connecting to device');
+      try {
+        await establishConnectionWithDevice(deviceId);
+      } catch (error) {
+        console.log('Some error while attempting connection ', error);
+      }
+  
+  
+
+  
+      await otaBeginUploadProcess(deviceId);
+  
+      console.log('Performing update ...Starting to write blocks ...');
+      console.log(
+        'There are ' +
+          firmwareBytes?.length +
+          ' bytes to write. Writing...please wait...',
+      );
+  
+      // setFirmwareUpdateStatus({status: firmwareUpdateStatusStates.writingBytes});
+      totalBytesWritten = await writeFirmwareBlocksToDevice(
+        deviceId,
+        Array.from(firmwareBytes),
+      );
+  
+
+      console.log('totalBytesWritten------>', totalBytesWritten)
+ 
+  
+      // await finishUpDFU(deviceId);
+  
+      console.log('All done!');
+      console.log('Disconnecting from device.');
+  
+      await manager.disconnectDevice(deviceId);
+    } catch (error) {
+      console.log('An unexpected error occurred in begin DFU ... ' , error);
+
+      throw error;
+    }
+  
+    return totalBytesWritten === firmwareBytes.length;
+  };
+
+  //
+
+  const establishConnectionWithDevice = async function (deviceId) {
+
+    return new Promise(resolve => setTimeout(resolve, 1000))
+      .then(async () => {
+        return await manager.connectToDevice(deviceId, {
+          autoConnect: true,
+          requestMTU: 245,
+        });
+      })
+      .then(device => {
+        return device.discoverAllServicesAndCharacteristics();
+      })
+      .then(device => {
+        console.log('Requesting MTU ' + BleData.REQUEST_MTU);
+        return manager.requestMTUForDevice(device.id, BleData.REQUEST_MTU);
+      })
+      .then(device => {
+        console.log('Negotiated MTU: ' + device.mtu);
+        console.log('Setting BLOCK_SIZE = ' + (device.mtu - 8));
+        BleData.NEGOTIATED_MTU = device.mtu;
+        BleData.BLOCK_SIZE = device.mtu - 8;
+        return device;
+      })
+      .catch(error => {
+        console.log('Error during establishing connection ', error);
+      });
+  };
+
+  const otaBeginUploadProcess = async function (deviceId) {
+    let newValueBuffer = Buffer.alloc(1);
+    newValueBuffer.writeUInt8(ctlStart);
+  
+    try {
+      return manager.writeCharacteristicWithoutResponseForDevice(
+          deviceId,
+          krakenOtaService,
+          krakenOtaControlAttribute,
+          newValueBuffer.toString('base64'),
+        )
+        .then(characteristic => {
+          console.log('Waiting 1000ms after writing CTL_START');
+          return new Promise(r => setTimeout(r, 1000));
+        })
+        .catch(error => {
+          console.log('Error ota begin upload a', error);
+        });
+    } catch (error) {
+      console.log('Error ota begin upload b', error);
+    }
+  };
+  const writeFirmwareBlocksToDevice = async function (
+    deviceId,
+    bytes,
+  ) {
+    let index = 0;
+    let bytesWritten = 0;
+    let currentSlice = bytes.slice(index, index + BleData.BLOCK_SIZE);
+  
+    while (currentSlice.length > 0) {
+
+      let isFirstWriteAttempt = true;
+      let isWriteSuccessful = false;
+  
+      while (isFirstWriteAttempt && !isWriteSuccessful) {
+        try {
+          await manager.writeCharacteristicWithoutResponseForDevice(
+              deviceId,
+              krakenOtaService,
+              krakenOtaDataAttribute,
+              Buffer.from(currentSlice).toString('base64'),
+            )
+            .catch(error => {
+              console.log(error);
+              bytesWritten = 0;
+            });
+  
+          isWriteSuccessful = true;
+          // if (!isFirstWriteAttempt) {
+          //   console.log(`Writing slice at index ${index} succeeded on retry.`);
+          // }
+        } catch (error) {
+          if (!isFirstWriteAttempt) {
+            throw error;
+          }
+          isFirstWriteAttempt = false;
+        }
+      }
+  
+      index += BleData.BLOCK_SIZE;
+      bytesWritten += Math.min(currentSlice.length, BleData.BLOCK_SIZE);
+      currentSlice = currentSlice = bytes.slice(
+        index,
+        index + BleData.BLOCK_SIZE,
+      );
+  
+
+    }
+    return bytesWritten;
+  };
+
 
 
 

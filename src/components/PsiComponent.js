@@ -1,24 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { manager } from '../components/BluetoothManager';
 import { krakenDeviceUUID, KrakenUUIDs } from '../kraken/KrakenUUIDs';
 import { bytesToString } from 'convert-string';
 import { Text, View } from 'react-native';
 
-// Convert pressure data to PSI format
-function readingToPsi(bytes) {
-  let pressure = bytesToString(bytes.filter(byte => byte !== 0));
-  pressure = Number.parseInt(pressure).toString();
-
-  // Format pressure to show decimal point
-  if (pressure.length === 1) {
-    return `0.${pressure}`;
-  } else {
-    const separatorIndex = pressure.length - 1;
-    return `${pressure.slice(0, separatorIndex)}.${pressure.slice(separatorIndex)}`;
-  }
-}
-
-const PsiComponent = ({ deviceId }) => {
+// Memoize PsiComponent to prevent unnecessary re-renders
+const PsiComponent = React.memo(({ deviceId }) => {
   const [pressure, setPressure] = useState('?');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -35,10 +22,10 @@ const PsiComponent = ({ deviceId }) => {
       // Cleanup (e.g., stop monitoring when component unmounts or deviceId changes)
       manager.removeDeviceListener(deviceId);
     };
-  }, [deviceId]);
+  }, [deviceId, monitorPressure]);
 
-  // Monitor the pressure characteristic for the given deviceId
-  const monitorPressure = async (deviceId) => {
+  // Memoize the monitoring function to prevent unnecessary re-creation
+  const monitorPressure = useCallback(async (deviceId) => {
     try {
       const subscription = manager.monitorCharacteristicForDevice(
         deviceId,
@@ -64,7 +51,21 @@ const PsiComponent = ({ deviceId }) => {
       setLoading(false);
       console.error(err);
     }
-  };
+  }, []);
+
+  // Convert pressure data to PSI format
+  function readingToPsi(bytes) {
+    let pressure = bytesToString(bytes.filter(byte => byte !== 0));
+    pressure = Number.parseInt(pressure).toString();
+
+    // Format pressure to show decimal point
+    if (pressure.length === 1) {
+      return `0.${pressure}`;
+    } else {
+      const separatorIndex = pressure.length - 1;
+      return `${pressure.slice(0, separatorIndex)}.${pressure.slice(separatorIndex)}`;
+    }
+  }
 
   // Extract pressure data from the characteristic
   const extractPressureData = (deviceDetails) => {
@@ -81,6 +82,6 @@ const PsiComponent = ({ deviceId }) => {
       {!loading && !error && <Text>Pressure: {pressure} PSI</Text>}
     </View>
   );
-};
+});
 
 export default PsiComponent;

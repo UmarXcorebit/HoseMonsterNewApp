@@ -37,3 +37,9 @@ export const KrakenUUIDs = {
   export const ctlDone = 0x03;
   export const ctlClose = 0x04;
   
+
+  export const BleData = {
+    REQUEST_MTU: 245,
+    BLOCK_SIZE: 245 - 8,
+    NEGOTIATED_MTU: 0,
+  };
