@@ -11,10 +11,18 @@ import {
   StyleSheet,
   Pressable,
 } from 'react-native';
-import {BleData, ctlStart, krakenDeviceUUID} from '../kraken/KrakenUUIDs';
+import {
+  BleData,
+  ctlDone,
+  ctlStart,
+  krakenDeviceUUID,
+  krakenOtaControlAttribute,
+  krakenOtaDataAttribute,
+  krakenOtaService,
+} from '../kraken/KrakenUUIDs';
 import {manager} from '../components/BluetoothManager';
 import PsiComponent from '../components/PsiComponent';
-import { ZeroByteFW } from '@zerobytellc/zerobyte-firmware-utils';
+import {ZeroByteFW} from '@zerobytellc/zerobyte-firmware-utils';
 import RNFetchBlob from 'rn-fetch-blob';
 
 const Home = () => {
@@ -50,8 +58,6 @@ const Home = () => {
 
     return false;
   };
-
-
 
   // Request Bluetooth permissions on component mount
   useEffect(() => {
@@ -97,15 +103,13 @@ const Home = () => {
           const batteryStatus = await getBatteryStatus(deviceInfo);
           updateDeviceList(device, batteryStatus);
         }
-      }else{
-
+      } else {
         const deviceInfo = await device.discoverAllServicesAndCharacteristics();
         if (deviceInfo) {
           const batteryStatus = await getBatteryStatus(deviceInfo);
           updateDeviceList(device, batteryStatus);
         }
       }
-   
     } catch (error) {
       manager.onDeviceDisconnected(device.id, (error, device) => {
         if (error) {
@@ -156,7 +160,6 @@ const Home = () => {
     });
   };
 
-
   // perform DFU
   const getFirmwareFile = async function (isRangeExtender) {
     let modules = [];
@@ -173,112 +176,104 @@ const Home = () => {
       console.log(`Downloading ${isRangeExtender} : ${latestFirmware.version}`);
       modules.push(await ZeroByteFW.download_fw(latestFirmware));
     }
-  
+
     return modules;
-  }
-//   const performDFU = async () => {
-//   console.log(`Performing firmware update for ${selectedDevice?.deviceName} : ${selectedDevice?.deviceId}`);
-//   let firmwarePaths = await getFirmwareFile('kraken');
-//   //get  path of the file in an array
-//   console.log( "Success Path---->",firmwarePaths);
+  };
+  //   const performDFU = async () => {
+  //   console.log(`Performing firmware update for ${selectedDevice?.deviceName} : ${selectedDevice?.deviceId}`);
+  //   let firmwarePaths = await getFirmwareFile('kraken');
+  //   //get  path of the file in an array
+  //   console.log( "Success Path---->",firmwarePaths);
 
-//   if(firmwarePaths){
+  //   if(firmwarePaths){
 
-  
-//   for (let i = firmwarePaths.length - 1; i >= 0; --i) {
-//     let fileCountMsg = `[${firmwarePaths.length - i} of ${firmwarePaths.length}]`;
-// console.log('fileCountMsg---->', fileCountMsg)
-//     let firmwarePath = firmwarePaths[i];
-//     try {
-//  await manager.cancelDeviceConnection(selectedDevice?.deviceId)
-    
-//     } catch (error) {
-//       console.log("Dis connecting error", error);
-//     }
+  //   for (let i = firmwarePaths.length - 1; i >= 0; --i) {
+  //     let fileCountMsg = `[${firmwarePaths.length - i} of ${firmwarePaths.length}]`;
+  // console.log('fileCountMsg---->', fileCountMsg)
+  //     let firmwarePath = firmwarePaths[i];
+  //     try {
+  //  await manager.cancelDeviceConnection(selectedDevice?.deviceId)
 
-//   await readFileAndStartFlashing(
-//       deviceId,
-//       firmwarePath,
-//       [firmwarePaths.length - i, firmwarePaths.length],
-//     ).then(result => {
-//      console.log('result', result)
-//     })
-//   }
-// }
+  //     } catch (error) {
+  //       console.log("Dis connecting error", error);
+  //     }
 
-//   return result ? 1 : 0;
-//   }
+  //   await readFileAndStartFlashing(
+  //       deviceId,
+  //       firmwarePath,
+  //       [firmwarePaths.length - i, firmwarePaths.length],
+  //     ).then(result => {
+  //      console.log('result', result)
+  //     })
+  //   }
+  // }
 
-const performDFU = async () => {
-  console.log(`Performing firmware update for ${selectedDevice?.deviceName} : ${selectedDevice?.deviceId}`);
-  let firmwarePaths = await getFirmwareFile('kraken');
-  console.log("Success Path---->", firmwarePaths);
+  //   return result ? 1 : 0;
+  //   }
 
-  if (!firmwarePaths || firmwarePaths.length === 0) {
-    console.log("No firmware paths found.");
-    return 0;
-  }
+  const performDFU = async () => {
+    console.log(
+      `Performing firmware update for ${selectedDevice?.deviceName} : ${selectedDevice?.deviceId}`,
+    );
+    let firmwarePaths = await getFirmwareFile('kraken');
+    console.log('Success Path---->', firmwarePaths);
 
-  let result = false;  // Track if any update was successful
-
-  for (let i = firmwarePaths.length - 1; i >= 0; --i) {
-    let fileCountMsg = `[${firmwarePaths.length - i} of ${firmwarePaths.length}]`;
-    console.log('fileCountMsg---->', fileCountMsg);
-    let firmwarePath = firmwarePaths[i];
-
-  
-
-    try {
-      result = await readFileAndStartFlashing(
-        selectedDevice?.deviceId,  // Ensure you're passing the correct deviceId
-        firmwarePath,
-        [firmwarePaths.length - i, firmwarePaths.length]
-      );
-      console.log('Flashing result:', result);
-    } catch (error) {
-      console.log("Flashing error", error);
-      continue;  // Skip to next firmware path if flashing fails
+    if (!firmwarePaths || firmwarePaths.length === 0) {
+      console.log('No firmware paths found.');
+      return 0;
     }
-  }
 
-  return result ? 1 : 0;
-}
+    let result = false; // Track if any update was successful
 
+    for (let i = firmwarePaths.length - 1; i >= 0; --i) {
+      let fileCountMsg = `[${firmwarePaths.length - i} of ${
+        firmwarePaths.length
+      }]`;
+      console.log('fileCountMsg---->', fileCountMsg);
+      let firmwarePath = firmwarePaths[i];
 
+      try {
+        result = await readFileAndStartFlashing(
+          selectedDevice?.deviceId, // Ensure you're passing the correct deviceId
+          firmwarePath,
+          [firmwarePaths.length - i, firmwarePaths.length],
+        );
+        console.log('Flashing result:', result);
+      } catch (error) {
+        console.log('Flashing error', error);
+        continue; // Skip to next firmware path if flashing fails
+      }
+    }
+
+    return result ? 1 : 0;
+  };
 
   const readFileAndStartFlashing = async function (
     deviceId,
     firmwarePath,
     steps,
   ) {
-  
-  console.log('firmwarePath---Reading->', firmwarePath)
+    console.log('firmwarePath---Reading->', firmwarePath);
     let firmwareBytes = await readFirmwareBytes(firmwarePath);
-    console.log('firmwareBytes------->', firmwareBytes)
-    if(firmwareBytes){
-   return beginDFU(
-      deviceId,
-      firmwareBytes,
-      steps,
-    );
+    // console.log('firmwareBytes------->', firmwareBytes)
+    if (firmwareBytes) {
+      return beginDFU(deviceId, firmwareBytes, steps);
     }
- 
   };
 
-
   const readFirmwareBytes = async function (filePath) {
-    console.log('filePath', filePath)
+    console.log('filePath', filePath);
     let stats = await RNFetchBlob.fs.stat(`${filePath}`);
     // console.log(`File stat: ${stats}`);
     let firmwareSize = stats.size;
     let firmwareBuffer = new ArrayBuffer(firmwareSize);
     let firmwareBytes = new Uint8Array(firmwareBuffer);
     let done = false;
-  
+
     if (stats.size > 0) {
       RNFetchBlob.fs.readStream(filePath, 'ascii').then(stream => {
         let bytesRead = 0;
-  
+
         stream.open();
         stream.onError(err => {
           console.log('Error while reading file ', err);
@@ -292,72 +287,66 @@ const performDFU = async () => {
           done = true;
         });
       });
-  
+
       while (!done) {
         await new Promise(r => setTimeout(r, 100));
       }
     }
-  console.log('firmwareBytes------>', firmwareBytes)
+
     return firmwareBytes;
   };
-  
 
-  const beginDFU = async function (
-    deviceId,
-    firmwareBytes,
-  
-  ) {
+  const beginDFU = async function (deviceId, firmwareBytes) {
     let totalBytesWritten = 0;
-  
+
     try {
       console.log('Connecting to device');
       try {
-        await establishConnectionWithDevice(deviceId);
+
+    let result = await establishConnectionWithDevice(deviceId);
+  
+
+        // console.log('result------>', result);
+
+        if (result) {
+          await otaBeginUploadProcess(deviceId);
+          console.log('Performing update ...Starting to write blocks ...');
+          console.log(
+            'There are ' +
+              firmwareBytes?.length +
+              ' bytes to write. Writing...please wait...',
+          );
+
+          // // setFirmwareUpdateStatus({status: firmwareUpdateStatusStates.writingBytes});
+          totalBytesWritten = await writeFirmwareBlocksToDevice(
+            deviceId,
+            Array.from(firmwareBytes),
+          );
+        }
       } catch (error) {
         console.log('Some error while attempting connection ', error);
       }
-  
-  
 
-  
-      await otaBeginUploadProcess(deviceId);
-  
-      console.log('Performing update ...Starting to write blocks ...');
-      console.log(
-        'There are ' +
-          firmwareBytes?.length +
-          ' bytes to write. Writing...please wait...',
-      );
-  
-      // setFirmwareUpdateStatus({status: firmwareUpdateStatusStates.writingBytes});
-      totalBytesWritten = await writeFirmwareBlocksToDevice(
-        deviceId,
-        Array.from(firmwareBytes),
-      );
-  
+      console.log('totalBytesWritten------>', totalBytesWritten);
 
-      console.log('totalBytesWritten------>', totalBytesWritten)
- 
-  
       // await finishUpDFU(deviceId);
-  
+
       console.log('All done!');
       console.log('Disconnecting from device.');
-  
-      await manager.disconnectDevice(deviceId);
+
+      // await manager.cancelDeviceConnection(deviceId);
     } catch (error) {
-      console.log('An unexpected error occurred in begin DFU ... ' , error);
+      console.log('An unexpected error occurred in begin DFU ... ', error);
 
       throw error;
     }
-  
+
     return totalBytesWritten === firmwareBytes.length;
   };
 
   //
 
   const establishConnectionWithDevice = async function (deviceId) {
-
     return new Promise(resolve => setTimeout(resolve, 1000))
       .then(async () => {
         return await manager.connectToDevice(deviceId, {
@@ -387,41 +376,50 @@ const performDFU = async () => {
   const otaBeginUploadProcess = async function (deviceId) {
     let newValueBuffer = Buffer.alloc(1);
     newValueBuffer.writeUInt8(ctlStart);
-  
+
     try {
-      return manager.writeCharacteristicWithoutResponseForDevice(
+      return manager
+        .writeCharacteristicWithoutResponseForDevice(
           deviceId,
           krakenOtaService,
           krakenOtaControlAttribute,
           newValueBuffer.toString('base64'),
         )
-        .then(characteristic => {
-          console.log('Waiting 1000ms after writing CTL_START');
-          return new Promise(r => setTimeout(r, 1000));
+        .then(characteristc => {
+          console.log('characteristc----------->', characteristc);
         })
-        .catch(error => {
-          console.log('Error ota begin upload a', error);
+        .catch(err => {
+          console.log('err in OtaBegin', err);
         });
     } catch (error) {
       console.log('Error ota begin upload b', error);
     }
   };
+
   const writeFirmwareBlocksToDevice = async function (
     deviceId,
     bytes,
+
   ) {
     let index = 0;
     let bytesWritten = 0;
     let currentSlice = bytes.slice(index, index + BleData.BLOCK_SIZE);
-  
+
     while (currentSlice.length > 0) {
+      // console.log(
+      //   `Current slice index: ${index} | length: ${Math.min(
+      //     BleData.BLOCK_SIZE,
+      //     currentSlice.length,
+      //   )}`,
+      // );
 
       let isFirstWriteAttempt = true;
       let isWriteSuccessful = false;
-  
+
       while (isFirstWriteAttempt && !isWriteSuccessful) {
         try {
-          await manager.writeCharacteristicWithoutResponseForDevice(
+          await BluetoothManagerInstance.manager
+            .writeCharacteristicWithoutResponseForDevice(
               deviceId,
               krakenOtaService,
               krakenOtaDataAttribute,
@@ -431,7 +429,7 @@ const performDFU = async () => {
               console.log(error);
               bytesWritten = 0;
             });
-  
+
           isWriteSuccessful = true;
           // if (!isFirstWriteAttempt) {
           //   console.log(`Writing slice at index ${index} succeeded on retry.`);
@@ -443,21 +441,44 @@ const performDFU = async () => {
           isFirstWriteAttempt = false;
         }
       }
-  
+
       index += BleData.BLOCK_SIZE;
       bytesWritten += Math.min(currentSlice.length, BleData.BLOCK_SIZE);
       currentSlice = currentSlice = bytes.slice(
         index,
         index + BleData.BLOCK_SIZE,
       );
-  
-
     }
+
     return bytesWritten;
   };
 
+  // const finishUpDFU = function (deviceId) {
+  //   let newValueBuffer = Buffer.alloc(1);
+  //   newValueBuffer.writeUInt8(ctlDone);
+  
+  //   try {
+  //     return manager.writeCharacteristicWithResponseForDevice(
+  //         deviceId,
+  //         krakenOtaService,
+  //         krakenOtaControlAttribute,
+  //         newValueBuffer.toString('base64'),
+  //       )
+  //       .then(characteristic => {
+  //         console.log('Waiting 1000ms after writing CTL_END');
+  //         return new Promise(r => setTimeout(r, 1000));
+  //       })
+  //       .catch(error => {
+  //         console.log('Error occurred during finishing up DFU');
+  //         console.log(error + ' || ' + error.reason);
+  //         return new Promise((r, f) => setTimeout(f, 1000));
+  //       });
+  //   } catch (error) {
+  //     console.log('FINISH UP DFU ERROR!', error);
+  //   }
+  // };
 
-
+  
 
   return (
     <View style={{padding: 20}}>
@@ -485,8 +506,8 @@ const performDFU = async () => {
           {item?.dfuFound && (
             <TouchableOpacity
               onPress={() => {
-                setSelectedDevice(item)
-                setModalVisible(true)
+                setSelectedDevice(item);
+                setModalVisible(true);
               }}
               style={{
                 width: '25%',
@@ -523,9 +544,7 @@ const performDFU = async () => {
                   </Pressable>
                   <Pressable
                     style={[styles.buttonClose, styles.button]}
-                    onPress={() => 
-                      performDFU()
-                    }>
+                    onPress={() => performDFU()}>
                     <Text style={styles.textStyle}>Confirm</Text>
                   </Pressable>
                 </View>
