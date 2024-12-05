@@ -212,19 +212,15 @@ const Home = () => {
   //   }
 
   const performDFU = async () => {
-    console.log(
-      `Performing firmware update for ${selectedDevice?.deviceName} : ${selectedDevice?.deviceId}`,
-    );
+
     let firmwarePaths = await getFirmwareFile('kraken');
-    console.log('Success Path---->', firmwarePaths);
+
 
     if (!firmwarePaths || firmwarePaths.length === 0) {
       console.log('No firmware paths found.');
       return 0;
     }
-
-    let result = false; // Track if any update was successful
-
+    let result = false; 
     for (let i = firmwarePaths.length - 1; i >= 0; --i) {
       let fileCountMsg = `[${firmwarePaths.length - i} of ${
         firmwarePaths.length
@@ -238,7 +234,7 @@ const Home = () => {
           firmwarePath,
           [firmwarePaths.length - i, firmwarePaths.length],
         );
-        console.log('Flashing result:', result);
+        // console.log('Flashing result:----->', result);
       } catch (error) {
         console.log('Flashing error', error);
         continue; // Skip to next firmware path if flashing fails
@@ -255,16 +251,15 @@ const Home = () => {
   ) {
     console.log('firmwarePath---Reading->', firmwarePath);
     let firmwareBytes = await readFirmwareBytes(firmwarePath);
-    // console.log('firmwareBytes------->', firmwareBytes)
+    console.log('firmwarePath---Reading->', firmwarePath);
     if (firmwareBytes) {
       return beginDFU(deviceId, firmwareBytes, steps);
     }
   };
 
   const readFirmwareBytes = async function (filePath) {
-    console.log('filePath', filePath);
+
     let stats = await RNFetchBlob.fs.stat(`${filePath}`);
-    // console.log(`File stat: ${stats}`);
     let firmwareSize = stats.size;
     let firmwareBuffer = new ArrayBuffer(firmwareSize);
     let firmwareBytes = new Uint8Array(firmwareBuffer);
@@ -296,62 +291,52 @@ const Home = () => {
     return firmwareBytes;
   };
 
-  const beginDFU = async function (deviceId, firmwareBytes) {
-    let totalBytesWritten = 0;
-
-    try {
-      console.log('Connecting to device');
-      try {
-
-    let result = await establishConnectionWithDevice(deviceId);
   
 
-        // console.log('result------>', result);
 
-        if (result) {
-          await otaBeginUploadProcess(deviceId);
-          console.log('Performing update ...Starting to write blocks ...');
-          console.log(
-            'There are ' +
-              firmwareBytes?.length +
-              ' bytes to write. Writing...please wait...',
-          );
 
-          // // setFirmwareUpdateStatus({status: firmwareUpdateStatusStates.writingBytes});
-          totalBytesWritten = await writeFirmwareBlocksToDevice(
-            deviceId,
-            Array.from(firmwareBytes),
-          );
-        }
-      } catch (error) {
-        console.log('Some error while attempting connection ', error);
+  const beginDFU = async (deviceId, firmwareBytes) => {
+    let totalBytesWritten = 0;
+  
+    try {
+
+       const result = await establishConnectionWithDevice(deviceId);
+      console.log('Device connection established. Starting firmware update...',result);
+      if(result){
+          const uploadProcessResult =  await otaBeginUploadProcess(deviceId);
+          console.log('uploadProcessResult------->',uploadProcessResult )
+          if(uploadProcessResult){
+            console.log(`Starting to write ${firmwareBytes?.length || 0} bytes. Please wait...`);
+  totalBytesWritten = await writeFirmwareBlocksToDevice(deviceId, Array.from(firmwareBytes));
+  console.log('totalBytesWritten------>', totalBytesWritten)
+  if(totalBytesWritten){
+ await finishUpDFU(deviceId);
+
+// await manager.cancelDeviceConnection(deviceId)
+  }
+          }
       }
 
-      console.log('totalBytesWritten------>', totalBytesWritten);
+  
+      console.log('Firmware update completed. Disconnecting from device...');
+  
+      // Finish up the DFU process
 
-      // await finishUpDFU(deviceId);
-
-      console.log('All done!');
-      console.log('Disconnecting from device.');
-
-      // await manager.cancelDeviceConnection(deviceId);
+     
     } catch (error) {
-      console.log('An unexpected error occurred in begin DFU ... ', error);
-
-      throw error;
+      console.error('Error during DFU process: ', error);
+      throw error;  // Rethrow the error to propagate it up the call stack if necessary
     }
-
+  
     return totalBytesWritten === firmwareBytes.length;
   };
-
-  //
-
+  
   const establishConnectionWithDevice = async function (deviceId) {
     return new Promise(resolve => setTimeout(resolve, 1000))
       .then(async () => {
         return await manager.connectToDevice(deviceId, {
           autoConnect: true,
-          requestMTU: 245,
+          requestMTU:  BleData.REQUEST_MTU,
         });
       })
       .then(device => {
@@ -359,7 +344,7 @@ const Home = () => {
       })
       .then(device => {
         console.log('Requesting MTU ' + BleData.REQUEST_MTU);
-        return manager.requestMTUForDevice(device.id, BleData.REQUEST_MTU);
+        return manager.requestMTUForDevice(device.id,   BleData.REQUEST_MTU);
       })
       .then(device => {
         console.log('Negotiated MTU: ' + device.mtu);
@@ -384,13 +369,7 @@ const Home = () => {
           krakenOtaService,
           krakenOtaControlAttribute,
           newValueBuffer.toString('base64'),
-        )
-        .then(characteristc => {
-          console.log('characteristc----------->', characteristc);
-        })
-        .catch(err => {
-          console.log('err in OtaBegin', err);
-        });
+        );
     } catch (error) {
       console.log('Error ota begin upload b', error);
     }
@@ -406,12 +385,6 @@ const Home = () => {
     let currentSlice = bytes.slice(index, index + BleData.BLOCK_SIZE);
 
     while (currentSlice.length > 0) {
-      // console.log(
-      //   `Current slice index: ${index} | length: ${Math.min(
-      //     BleData.BLOCK_SIZE,
-      //     currentSlice.length,
-      //   )}`,
-      // );
 
       let isFirstWriteAttempt = true;
       let isWriteSuccessful = false;
@@ -431,9 +404,7 @@ const Home = () => {
             });
 
           isWriteSuccessful = true;
-          // if (!isFirstWriteAttempt) {
-          //   console.log(`Writing slice at index ${index} succeeded on retry.`);
-          // }
+        
         } catch (error) {
           if (!isFirstWriteAttempt) {
             throw error;
@@ -453,31 +424,33 @@ const Home = () => {
     return bytesWritten;
   };
 
-  // const finishUpDFU = function (deviceId) {
-  //   let newValueBuffer = Buffer.alloc(1);
-  //   newValueBuffer.writeUInt8(ctlDone);
+  const finishUpDFU = function (deviceId) {
+    let newValueBuffer = Buffer.alloc(1);
+    newValueBuffer.writeUInt8(ctlDone);
   
-  //   try {
-  //     return manager.writeCharacteristicWithResponseForDevice(
-  //         deviceId,
-  //         krakenOtaService,
-  //         krakenOtaControlAttribute,
-  //         newValueBuffer.toString('base64'),
-  //       )
-  //       .then(characteristic => {
-  //         console.log('Waiting 1000ms after writing CTL_END');
-  //         return new Promise(r => setTimeout(r, 1000));
-  //       })
-  //       .catch(error => {
-  //         console.log('Error occurred during finishing up DFU');
-  //         console.log(error + ' || ' + error.reason);
-  //         return new Promise((r, f) => setTimeout(f, 1000));
-  //       });
-  //   } catch (error) {
-  //     console.log('FINISH UP DFU ERROR!', error);
-  //   }
-  // };
+    try {
+      return manager.writeCharacteristicWithResponseForDevice(
+          deviceId,
+          krakenOtaService,
+          krakenOtaControlAttribute,
+          newValueBuffer.toString('base64'),
+        )
+        .then(characteristic => {
+          console.log('Waiting 1000ms after writing CTL_END-------->',characteristic);
+          return new Promise(r => setTimeout(r, 1000));
+        })
+        .catch(error => {
+          console.log('Error occurred during finishing up DFU',error);
 
+          return new Promise((r, f) => setTimeout(f, 1000));
+        });
+    } catch (error) {
+      console.log('FINISH UP DFU ERROR!----->', error);
+    }
+  };
+
+
+       
   
 
   return (
