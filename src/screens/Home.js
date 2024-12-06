@@ -10,6 +10,7 @@ import {
   Modal,
   StyleSheet,
   Pressable,
+  TextInput,
 } from 'react-native';
 import {
   BleData,
@@ -24,13 +25,16 @@ import {manager} from '../components/BluetoothManager';
 import PsiComponent from '../components/PsiComponent';
 import {ZeroByteFW} from '@zerobytellc/zerobyte-firmware-utils';
 import RNFetchBlob from 'rn-fetch-blob';
+import { useNavigation } from '@react-navigation/native';
 
 const Home = () => {
   const [deviceList, setDeviceList] = useState([]);
   const [selectedSection, setSelectedSection] = useState('Kraken');
   const [modalVisible, setModalVisible] = useState(false);
   const [selectedDevice, setSelectedDevice] = useState(null);
-
+  const [newDisplayName, setNewDisplayName] = useState('...');
+const navigation = useNavigation()
+  const [showModalUpdateName,setShowModalUpdateName] = useState(false)
   var Buffer = require('buffer/').Buffer;
   // Request Bluetooth permissions
   const requestBluetoothPermission = async () => {
@@ -428,18 +432,22 @@ const Home = () => {
     let newValueBuffer = Buffer.alloc(1);
     newValueBuffer.writeUInt8(ctlDone);
   
+    console.log('krakenOtaService', krakenOtaService)
+    console.log('krakenOtaControlAttribute', krakenOtaControlAttribute)
     try {
       return manager.writeCharacteristicWithResponseForDevice(
-          deviceId,
-          krakenOtaService,
-          krakenOtaControlAttribute,
-          newValueBuffer.toString('base64'),
-        )
-        .then(characteristic => {
+        deviceId,
+        krakenOtaService,
+        krakenOtaControlAttribute,
+        newValueBuffer.toString('base64'),
+      )
+      .then(characteristic => {
+          debugger
           console.log('Waiting 1000ms after writing CTL_END-------->',characteristic);
           return new Promise(r => setTimeout(r, 1000));
         })
         .catch(error => {
+          debugger
           console.log('Error occurred during finishing up DFU',error);
 
           return new Promise((r, f) => setTimeout(f, 1000));
@@ -476,6 +484,29 @@ const Home = () => {
           <Text>Device Name: {item.deviceName}</Text>
           <Text>Battery Status: {item.batteryStatus}</Text>
           <PsiComponent deviceId={item.deviceId} />
+          <View
+          style={{
+            flexDirection:'row',
+            justifyContent:"space-around"
+          }}
+          >
+            <TouchableOpacity
+            onPress={()=>{
+              navigation.navigate('Deatils',{item})
+            }}
+             style={{
+              width: '30%',
+              justifyContent: 'center',
+              alignItems: 'center',
+              backgroundColor: 'green',
+            }}
+            >
+            
+              <Text>
+              Update Name
+              </Text>
+            </TouchableOpacity>
+
           {item?.dfuFound && (
             <TouchableOpacity
               onPress={() => {
@@ -491,6 +522,8 @@ const Home = () => {
               <Text>DFU</Text>
             </TouchableOpacity>
           )}
+          </View>
+
           <Modal
             transparent={true}
             visible={modalVisible}
@@ -524,6 +557,7 @@ const Home = () => {
               </View>
             </View>
           </Modal>
+
         </View>
       ))}
     </View>
@@ -548,7 +582,7 @@ const styles = StyleSheet.create({
     borderColor: '#000',
     borderWidth: 1,
     width: '70%',
-    height: '20%',
+    height: '40%',
   },
   button: {
     borderRadius: 20,
