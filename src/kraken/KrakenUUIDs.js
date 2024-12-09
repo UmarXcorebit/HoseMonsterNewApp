@@ -37,3 +37,29 @@ export const KrakenUUIDs = {
   export const ctlDone = 0x03;
   export const ctlClose = 0x04;
   
+
+  export const BleData = {
+    REQUEST_MTU: 245,
+    BLOCK_SIZE: 245 - 8,
+    NEGOTIATED_MTU: 0,
+  };
+
+
+
+
+  export const firmwareUpdateStatusStates = {
+    confirmation: 'confirmation',
+    preparingDfu: 'Preparing for update',
+    writingBytes: 'writing bytes',
+    finishUp: 'finish up',
+    success: 'success',
+    alreadyUptodate: 'already uptodate',
+    failed: 'failed',
+    puttingIntoDfu: 'Putting device into DFU mode',
+    rebootingDevice: 'Rebooting device',
+    readingFirmware: 'Reading firmware file',
+    downloadingFirmware: 'Downloading firmware',
+  };
+  
+
+  export const toasterPerformingUpdate = 'Performing firmware update..';

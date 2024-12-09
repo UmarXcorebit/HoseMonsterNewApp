@@ -1,247 +1,509 @@
-import {
-  View,
-  Text,
-  Platform,
-  Alert,
-  PermissionsAndroid,
-  FlatList,
-  Button,
-} from 'react-native';
+import {useNavigation} from '@react-navigation/native';
+import {ZeroByteFW} from '@zerobytellc/zerobyte-firmware-utils';
 import React, {useEffect, useState} from 'react';
-import {manager} from './BluetoothManager';
 import {
-  arcusDeviceUUID,
+  Alert,
+  Button,
+  Modal,
+  PermissionsAndroid,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import RNFetchBlob from 'rn-fetch-blob';
+import {manager} from '../components/BluetoothManager';
+import PsiComponent from '../components/PsiComponent';
+import {
+  BleData,
+  ctlDone,
+  ctlStart,
+  firmwareUpdateStatusStates,
   krakenDeviceUUID,
-  KrakenUUIDs,
+  krakenOtaControlAttribute,
+  krakenOtaDataAttribute,
+  krakenOtaService,
 } from '../kraken/KrakenUUIDs';
-import {bytesToString} from 'convert-string';
 
 const Home = () => {
   const [deviceList, setDeviceList] = useState([]);
-
-
   const [selectedSection, setSelectedSection] = useState('Kraken');
-
-  // Request Bluetooth permission
+  const [modalVisible, setModalVisible] = useState(false);
+  const [selectedDevice, setSelectedDevice] = useState(null);
+  const [newDisplayName, setNewDisplayName] = useState('...');
+  const [firmwareUpdateStatus, setFirmwareUpdateStatus] = useState();
+  const navigation = useNavigation();
+  const [showModalUpdateName, setShowModalUpdateName] = useState(false);
+  var Buffer = require('buffer/').Buffer;
+  // Request Bluetooth permissions
   const requestBluetoothPermission = async () => {
-    if (Platform.OS === 'ios') {
-      return true;
-    }
-    if (
-      Platform.OS === 'android' &&
-      PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
-    ) {
-      const apiLevel = parseInt(Platform.Version.toString(), 10);
+    if (Platform.OS === 'ios') return true;
 
-      if (apiLevel < 31) {
-        const granted = await PermissionsAndroid.request(
-          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-        );
-        return granted === PermissionsAndroid.RESULTS.GRANTED;
-      }
-      if (
-        PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN &&
-        PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT
-      ) {
-        const result = await PermissionsAndroid.requestMultiple([
-          PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
-          PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
-          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-        ]);
+    if (Platform.OS === 'android') {
+      const permissions = [
+        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+        PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+        PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+      ];
 
-        return (
-          result['android.permission.BLUETOOTH_CONNECT'] ===
-            PermissionsAndroid.RESULTS.GRANTED &&
-          result['android.permission.BLUETOOTH_SCAN'] ===
-            PermissionsAndroid.RESULTS.GRANTED &&
-          result['android.permission.ACCESS_FINE_LOCATION'] ===
-            PermissionsAndroid.RESULTS.GRANTED
-        );
+      const granted = await PermissionsAndroid.requestMultiple(permissions);
+      const allGranted = permissions.every(
+        permission =>
+          granted[permission] === PermissionsAndroid.RESULTS.GRANTED,
+      );
+
+      if (!allGranted) {
+        Alert.alert('Permissions have not been granted');
       }
+
+      return allGranted;
     }
 
-    Alert.alert('Permissions have not been granted');
     return false;
   };
 
-  // Request permissions on component mount
+  // Request Bluetooth permissions on component mount
   useEffect(() => {
     requestBluetoothPermission();
   }, []);
 
   // Start scanning once Bluetooth is powered on
-  React.useEffect(() => {
+  useEffect(() => {
     const subscription = manager.onStateChange(state => {
       if (state === 'PoweredOn') {
         scanAndConnect();
-        subscription.remove();
       }
     }, true);
+
     return () => subscription.remove();
-  }, [manager]);
+  }, []);
 
   // Scan for devices and connect
-  function scanAndConnect() {
-    manager.startDeviceScan(null, null, (error, device) => {
-      if (error) {
-        return;
+  const scanAndConnect = async () => {
+    manager.startDeviceScan(
+      [],
+      {allowDuplicates: false},
+      async (error, device) => {
+        if (error || !device.name) return;
+
+        const isKraken = device.serviceUUIDs?.includes(krakenDeviceUUID);
+
+        const krakenInDFU =
+          device?.localName === 'Kraken_DFU' || device?.name === 'Kraken_DFU';
+        if (krakenInDFU) {
+          updateDeviceList(device, '---');
+        }
+
+        if (isKraken) {
+          await handleDeviceConnection(device);
+        }
+      },
+    );
+  };
+
+  // Handle device connection and add to the device list
+  const handleDeviceConnection = async device => {
+    try {
+      const isConnected = await manager.isDeviceConnected(device.id);
+
+      if (!isConnected) {
+        await manager.connectToDevice(device.id);
+        const deviceInfo = await device.discoverAllServicesAndCharacteristics();
+        if (deviceInfo) {
+          const batteryStatus = await getBatteryStatus(deviceInfo);
+          updateDeviceList(device, batteryStatus);
+        }
+      } else {
+        const deviceInfo = await device.discoverAllServicesAndCharacteristics();
+        if (deviceInfo) {
+          const batteryStatus = await getBatteryStatus(deviceInfo);
+          updateDeviceList(device, batteryStatus);
+        }
+      }
+    } catch (error) {
+      manager.onDeviceDisconnected(device.id, (error, device) => {
+        if (error) {
+          console.error('device in case disconnected', error);
+        }
+      });
+      // console.error(`Error connecting to device ${device.name}:`, error);
+    }
+  };
+
+  // Get battery status from the device
+  const getBatteryStatus = async deviceInfo => {
+    const getDeviceDetails = await deviceInfo.readCharacteristicForService(
+      '180F',
+      '2A19',
+    );
+    if (getDeviceDetails) {
+      const convertedValue = Uint8Array.from(atob(getDeviceDetails.value), c =>
+        c.charCodeAt(0),
+      );
+      return convertedValue[0] === 255 ? 'Charging..' : `${convertedValue[0]}%`;
+    }
+    return 'Unknown';
+  };
+
+  // Update device list
+  const updateDeviceList = (device, batteryStatus) => {
+    setDeviceList(prevDeviceList => {
+      const updatedDeviceList = [...prevDeviceList];
+      const existingDeviceIndex = updatedDeviceList.findIndex(
+        d => d.deviceId === device.id,
+      );
+
+      const newDevice = {
+        deviceId: device.id,
+        deviceName: device.name,
+        batteryStatus,
+        dfuFound: true,
+      };
+
+      if (existingDeviceIndex <= -1) {
+        updatedDeviceList.push(newDevice);
+      } else {
+        updatedDeviceList[existingDeviceIndex] = newDevice;
       }
 
-      const isKraken =
-        device.serviceUUIDs && device.serviceUUIDs.includes(krakenDeviceUUID);
-      const isArcus =
-        device.serviceUUIDs && device.serviceUUIDs.includes(arcusDeviceUUID);
-
-      if (isKraken || isArcus) {
-        device
-          .connect()
-          .then(device => device.discoverAllServicesAndCharacteristics())
-          .then(device => {
-            return device.readCharacteristicForService('180F', '2A19');
-          })
-          .then(deviceResult => {
-            const convertedValue = Uint8Array.from(
-              atob(deviceResult.value),
-              c => c.charCodeAt(0),
-            );
-            const batteryStatus = getBatteryReading(convertedValue[0]);
-
-            const myData = manager.monitorCharacteristicForDevice(
-              deviceResult?.deviceID,
-              krakenDeviceUUID,
-              KrakenUUIDs.devicePressureSubscriptionCharacteristicUUID,
-              (error, characteristic) => {
-                const krakenData = readDeviceSubscriptionData(characteristic);
-
-                // Update deviceList based on Kraken/Arcus data
-                setDeviceList(prevDeviceList => {
-                  const updatedDeviceList = [...prevDeviceList];
-
-                  const existingDeviceIndex = updatedDeviceList.findIndex(
-                    d => d.deviceId === device.id,
-                  );
-                  console.log('Device info:', {
-                    deviceId: device.id,
-                    name: device.name,
-                    battery: batteryStatus,
-                    signalStrength: device.rssi,
-                    krakenName: krakenData.name,
-                    pressure: krakenData.pressure,
-                    isKraken,
-                    isArcus,
-                  });
-
-                  const newDevice = generateDeviceInformationObject(
-                    device.id,
-                    device.name,
-                    batteryStatus,
-                    device.rssi,
-                    krakenData.name,
-                    krakenData.pressure,
-                    isKraken,
-                    isArcus,
-                  );
-
-                  if (existingDeviceIndex === -1) {
-                    updatedDeviceList.push(newDevice);
-                  } else {
-                    updatedDeviceList[existingDeviceIndex] = newDevice;
-                  }
-
-                  return updatedDeviceList;
-                });
-              },
-              deviceResult?.deviceID,
-            );
-          })
-          .catch(error => console.log('error', error));
-      }
+      return updatedDeviceList;
     });
-  }
+  };
 
-  function readDeviceSubscriptionData(data) {
-    let readData = Uint8Array.from(atob(data.value), c => c.charCodeAt(0));
+  // perform DFU
+  const getFirmwareFile = async function (isRangeExtender) {
+    let modules = [];
 
-    let krakenIndex = 0;
-    let name = bin2String(readData.slice(krakenIndex, krakenIndex + 16), 16);
-    let pressure = readingToPsi(
-      readData.slice(krakenIndex + 16, krakenIndex + 21),
-      5,
+    let availableLatestFirmwares = await ZeroByteFW.get_latest_fw_info(
+      'hosemonster',
+      isRangeExtender,
+      // undefined,
+      // 'internal',
     );
 
-    return {name, pressure};
-  }
-
-  function bin2String(bytes, len) {
-    let result = '';
-    for (let i = 0; bytes[i] !== 0 && i < len; ++i) {
-      result += String.fromCharCode(parseInt(bytes[i]));
+    for (let i = 0; i < availableLatestFirmwares.length; ++i) {
+      let latestFirmware = availableLatestFirmwares[i];
+      console.log(`Downloading ${isRangeExtender} : ${latestFirmware.version}`);
+      modules.push(await ZeroByteFW.download_fw(latestFirmware));
     }
 
-    return result;
-  }
+    return modules;
+  };
+  const performDFU = async () => {
+    console.log(
+      `Performing firmware update for ${selectedDevice?.deviceName} : ${selectedDevice?.deviceId}`,
+    );
+    let firmwarePaths = await getFirmwareFile('kraken');
+    //get  path of the file in an array
+    console.log('Success Path---->', firmwarePaths);
 
-  function readingToPsi(bytes) {
-    let pressure = bytesToString(bytes.filter(byte => byte != 0));
+    let result = true;
+    let skipReboot = false;
 
-    pressure = Number.parseInt(pressure).toString();
-
-    if (pressure.length === 1) {
-      pressure = '0.' + pressure;
-    } else {
-      let separatorIndex = pressure.length - 1;
-      pressure =
-        pressure.slice(0, separatorIndex) +
-        '.' +
-        pressure.slice(separatorIndex);
+    if (selectedDevice?.deviceName.includes('DFU')) {
+      skipReboot = true;
     }
-    return pressure;
-  }
-
-  function getBatteryReading(value) {
-    let batteryStatus = '';
-    if (value === 255) {
-      batteryStatus = 'Charging..';
-    } else {
-      batteryStatus = `${value}%`;
+    if (selectedDevice?.deviceName == 'RE XXXXXXXX') {
+      skipReboot = true;
+    } else if (selectedDevice?.deviceName == 'Kraken XXXXXXXX') {
+      skipReboot = true;
     }
-    return batteryStatus;
-  }
 
-  function generateDeviceInformationObject(
-    address,
-    name,
-    batteryStatus,
-    signalStrength,
-    krakenName,
-    pressure,
-    isKraken,
-    isArcus,
+    for (let i = firmwarePaths.length - 1; result && i >= 0; --i) {
+      let fileCountMsg = `[${firmwarePaths.length - i} of ${
+        firmwarePaths.length
+      }]`;
+
+      let firmwarePath = firmwarePaths[i];
+      try {
+        manager.cancelTransaction(selectedDevice?.deviceId);
+        await disconnectDevice(selectedDevice?.deviceId);
+      } catch (error) {
+        console.log('Dis connecting error', error);
+      }
+
+      await readFileAndStartFlashing(
+        selectedDevice?.deviceId,
+        firmwarePath,
+        skipReboot[(firmwarePaths.length - i, firmwarePaths.length)],
+      ).then(result => {
+        return new Promise(resolve => {
+          // Waiting some time for device to reboot after installation...
+          setFirmwareUpdateStatus({
+            status: firmwareUpdateStatusStates.rebootingDevice,
+          });
+          setTimeout(() => {
+            resolve(result);
+          }, 2500);
+        });
+      });
+      skipReboot = true;
+    }
+
+    return result ? 1 : 0;
+  };
+
+  const readFileAndStartFlashing = async function (
+    deviceId,
+    firmwarePath,
+    skipReboot,
+    steps,
   ) {
-    return {
-      deviceId: address,
-      deviceName: name,
-      battery: batteryStatus,
-      signalStrength,
-      krakenName,
-      pressure,
-      isKraken,
-      isArcus,
-    };
+
+    let firmwareBytes = await readFirmwareBytes(firmwarePath);
+
+    return beginDFU(deviceId, firmwareBytes, skipReboot, steps);
+  };
+
+  const readFirmwareBytes = async function (filePath) {
+    let stats = await RNFetchBlob.fs.stat(`${filePath}`);
+    let firmwareSize = stats.size;
+    let firmwareBuffer = new ArrayBuffer(firmwareSize);
+    let firmwareBytes = new Uint8Array(firmwareBuffer);
+    let done = false;
+
+    if (stats.size > 0) {
+      RNFetchBlob.fs.readStream(filePath, 'ascii').then(stream => {
+        let bytesRead = 0;
+
+        stream.open();
+        stream.onError(err => {
+          console.log('Error while reading file ', err);
+        });
+        stream.onData(chunk => {
+          firmwareBytes.set(chunk, bytesRead);
+          bytesRead += chunk.length;
+        });
+        stream.onEnd(() => {
+          console.log('Done reading file ');
+          done = true;
+        });
+      });
+
+      while (!done) {
+        await new Promise(r => setTimeout(r, 100));
+      }
+    }
+
+    return firmwareBytes;
+  };
+
+  const beginDFU = async (deviceId, firmwareBytes, skipReboot, steps) => {
+    let totalBytesWritten = 0;
+
+    try {
+      console.log('Connecting to device');
+      try {
+        await establishConnectionWithDevice(deviceId);
+      } catch (error) {
+        console.log('Some error while attempting connection ', error);
+      }
+
+      if (!skipReboot) {
+        console.log('Attempting to reboot device into DFU mode');
+        setFirmwareUpdateStatus({
+          status: firmwareUpdateStatusStates.puttingIntoDfu,
+        });
+        await rebootDeviceIntoDFU(deviceId).then(async () => {
+          await disconnectDevice(deviceId);
+          return await establishConnectionWithDevice(deviceId);
+        });
+      }
+
+      await otaBeginUploadProcess(deviceId);
+
+      console.log('Performing update ...Starting to write blocks ...');
+      console.log(
+        'There are ' +
+          firmwareBytes?.length +
+          ' bytes to write. Writing...please wait...',
+      );
+
+      // setFirmwareUpdateStatus({status: firmwareUpdateStatusStates.writingBytes});
+
+      setFirmwareUpdateStatus({status: 'Updating firmware... '});
+
+      totalBytesWritten = await writeFirmwareBlocksToDevice(
+        deviceId,
+        Array.from(firmwareBytes),
+      );
+
+      console.log(
+        'Done writing blocks. Wrote ' + totalBytesWritten + ' bytes.',
+      );
+      console.log('Sending END command to OTA CONTROL.');
+
+      setFirmwareUpdateStatus({status: firmwareUpdateStatusStates.finishUp});
+
+      await finishUpDFU(deviceId);
+
+      console.log('All done!');
+      console.log('Disconnecting from device.');
+
+      await disconnectDevice(deviceId);
+    } catch (error) {
+      console.log('An unexpected error occurred in begin DFU ... ', error);
+      setFirmwareUpdateStatus({status: firmwareUpdateStatusStates.failed});
+      throw error;
+    }
+
+    return totalBytesWritten === firmwareBytes.length;
+  };
+
+  const establishConnectionWithDevice = async function (deviceId) {
+    return new Promise(resolve => setTimeout(resolve, 1000))
+      .then(async () => {
+        return await manager.connectToDevice(deviceId, {
+          autoConnect: true,
+          requestMTU: BleData.REQUEST_MTU,
+        });
+      })
+      .then(device => {
+        return device.discoverAllServicesAndCharacteristics();
+      })
+      .then(device => {
+        console.log('Requesting MTU ' + BleData.REQUEST_MTU);
+        return manager.requestMTUForDevice(device.id, BleData.REQUEST_MTU);
+      })
+      .then(device => {
+        console.log('Negotiated MTU: ' + device.mtu);
+        console.log('Setting BLOCK_SIZE = ' + (device.mtu - 8));
+        BleData.NEGOTIATED_MTU = device.mtu;
+        BleData.BLOCK_SIZE = device.mtu - 8;
+        return device;
+      })
+      .catch(error => {
+        console.log('Error during establishing connection ', error);
+      });
+  };
+
+  const otaBeginUploadProcess = async function (deviceId) {
+    let newValueBuffer = Buffer.alloc(1);
+    newValueBuffer.writeUInt8(ctlStart);
+
+    try {
+      return manager.writeCharacteristicWithoutResponseForDevice(
+        deviceId,
+        krakenOtaService,
+        krakenOtaControlAttribute,
+        newValueBuffer.toString('base64'),
+      );
+    } catch (error) {
+      console.log('Error ota begin upload b', error);
+    }
+  };
+
+  const writeFirmwareBlocksToDevice = async function (deviceId, bytes) {
+    let index = 0;
+    let bytesWritten = 0;
+    let currentSlice = bytes.slice(index, index + BleData.BLOCK_SIZE);
+
+    while (currentSlice.length > 0) {
+      let isFirstWriteAttempt = true;
+      let isWriteSuccessful = false;
+
+      while (isFirstWriteAttempt && !isWriteSuccessful) {
+        try {
+          await manager
+            .writeCharacteristicWithoutResponseForDevice(
+              deviceId,
+              krakenOtaService,
+              krakenOtaDataAttribute,
+              Buffer.from(currentSlice).toString('base64'),
+            )
+            .catch(error => {
+              console.log(error);
+              bytesWritten = 0;
+            });
+
+          isWriteSuccessful = true;
+        } catch (error) {
+          if (!isFirstWriteAttempt) {
+            throw error;
+          }
+          isFirstWriteAttempt = false;
+        }
+      }
+
+      index += BleData.BLOCK_SIZE;
+      bytesWritten += Math.min(currentSlice.length, BleData.BLOCK_SIZE);
+      currentSlice = currentSlice = bytes.slice(
+        index,
+        index + BleData.BLOCK_SIZE,
+      );
+    }
+
+    return bytesWritten;
+  };
+
+  const finishUpDFU = function (deviceId) {
+    let newValueBuffer = Buffer.alloc(1);
+    newValueBuffer.writeUInt8(ctlDone);
+
+    try {
+      return manager
+        .writeCharacteristicWithResponseForDevice(
+          deviceId,
+          krakenOtaService,
+          krakenOtaControlAttribute,
+          newValueBuffer.toString('base64'),
+        )
+        .then(characteristic => {
+          console.log(
+            'Waiting 1000ms after writing CTL_END-------->',
+            characteristic,
+          );
+          return new Promise(r => setTimeout(r, 1000));
+        })
+        .catch(error => {
+          // console.log('Error occurred during finishing up DFU',error)
+
+          return new Promise((r, f) => setTimeout(f, 1000));
+        });
+    } catch (error) {
+      console.log('FINISH UP DFU ERROR!----->', error);
+    }
+  };
+
+  async function disconnectDevice(deviceId) {
+    console.log('Attempting : disconnection..');
+    let status = await manager
+      .cancelDeviceConnection(deviceId)
+      .then(async () => {
+        console.log('Device has been disconnected successfully');
+        return 'Device has been disconnected successfully';
+      })
+      .catch(error => {
+        console.log(`error while disconnecting : ${error.message}`);
+        return `error while disconnecting : ${error.message}`;
+      });
+    return status;
   }
 
-  // Filter devices that have a valid battery level
+  //
 
-  const krakenDevices = deviceList.filter(device => device.isKraken);
-  const arcusDevices = deviceList.filter(device => device.isArcus);
+  const rebootDeviceIntoDFU = async function (deviceId) {
+    let newValueBuffer = Buffer.alloc(1);
+    newValueBuffer.writeUInt8(ctlStart);
 
-
+    try {
+      await manager.writeCharacteristicWithResponseForDevice(
+        deviceId,
+        krakenOtaService,
+        krakenOtaControlAttribute,
+        newValueBuffer.toString('base64'),
+      );
+    } catch (error) {
+      console.log('Error occurred rebooting into DFU: ' + error);
+      await disconnectDevice(deviceId);
+    }
+  };
 
   return (
     <View style={{padding: 20}}>
-      <Text style={{fontSize: 24, fontWeight: 'bold'}}>Home</Text>
-
-      {/* Toggle Buttons for Kraken and Arcus */}
+      {/* Section selection buttons */}
       <View
         style={{
           flexDirection: 'row',
@@ -253,54 +515,127 @@ const Home = () => {
           onPress={() => setSelectedSection('Kraken')}
           color={selectedSection === 'Kraken' ? 'blue' : 'gray'}
         />
-        <Button
-          title="Arcus"
-          onPress={() => setSelectedSection('Arcus')}
-          color={selectedSection === 'Arcus' ? 'blue' : 'gray'}
-        />
       </View>
 
-      {/* Conditional Rendering of Sections */}
-      {selectedSection === 'Kraken' && (
-        <View>
-          <Text style={{fontWeight: 'bold', fontSize: 18}}>Kraken Devices</Text>
-          <FlatList
-            data={krakenDevices}
-            keyExtractor={item => item.deviceId}
-            renderItem={({item}) => (
-              <View style={{marginVertical: 5}}>
-                <Text>Address</Text>
-                <Text>{item.deviceId}</Text>
-                <Text>Device Name: {item.deviceName}</Text>
-                <Text>Pressure: {item.pressure}</Text>
-                <Text>Signal Strength: {item.signalStrength}</Text>
-                <Text>Battery: {item.battery}</Text>
-              </View>
-            )}
-          />
-        </View>
-      )}
+      {/* Display list of connected devices with pressure data */}
+      {deviceList.map(item => (
+        <View key={item.deviceId} style={{marginVertical: 5}}>
+          <Text>Address: {item.deviceId}</Text>
+          <Text>Device Name: {item.deviceName}</Text>
+          <Text>Battery Status: {item.batteryStatus}</Text>
+          <PsiComponent deviceId={item.deviceId} />
+          <View
+            style={{
+              flexDirection: 'row',
+              justifyContent: 'space-around',
+            }}>
+            <TouchableOpacity
+              onPress={() => {
+                navigation.navigate('Deatils', {item});
+              }}
+              style={{
+                width: '30%',
+                justifyContent: 'center',
+                alignItems: 'center',
+                backgroundColor: 'green',
+              }}>
+              <Text>Update Name</Text>
+            </TouchableOpacity>
 
-      {selectedSection === 'Arcus' && (
-        <View>
-          <Text style={{fontWeight: 'bold', fontSize: 18}}>Arcus Devices</Text>
-          <FlatList
-            data={arcusDevices}
-            keyExtractor={item => item.deviceId}
-            renderItem={({item}) => (
-              <View style={{marginVertical: 5}}>
-                <Text>Address</Text>
-                <Text>{item.deviceId}</Text>
-                <Text>Device Name: {item.deviceName}</Text>
-                <Text>Signal Strength: {item.signalStrength}</Text>
-                <Text>Battery: {item.battery}</Text>
-              </View>
+            {item?.dfuFound && (
+              <TouchableOpacity
+                onPress={() => {
+                  setSelectedDevice(item);
+                  setModalVisible(true);
+                }}
+                style={{
+                  width: '25%',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  backgroundColor: 'orange',
+                }}>
+                <Text>DFU</Text>
+              </TouchableOpacity>
             )}
-          />
+          </View>
+
+          <Modal
+            transparent={true}
+            visible={modalVisible}
+            onRequestClose={() => {
+              Alert.alert('Modal has been closed.');
+              setModalVisible(!modalVisible);
+            }}>
+            <View style={styles.centeredView}>
+              <View style={styles.modalView}>
+                <Text style={styles.modalText}>
+                  Are you sure you want to update device data?
+                </Text>
+                <View
+                  style={{
+                    width: '100%',
+                    flexDirection: 'row',
+                    justifyContent: 'space-between',
+                    marginTop: 20,
+                  }}>
+                  <Pressable
+                    style={[styles.buttonClose, styles.button]}
+                    onPress={() => setModalVisible(false)}>
+                    <Text style={styles.textStyle}>Cancel</Text>
+                  </Pressable>
+                  <Pressable
+                    style={[styles.buttonClose, styles.button]}
+                    onPress={() => performDFU()}>
+                    <Text style={styles.textStyle}>Confirm</Text>
+                  </Pressable>
+                </View>
+              </View>
+            </View>
+          </Modal>
         </View>
-      )}
+      ))}
     </View>
   );
 };
 
 export default Home;
+
+const styles = StyleSheet.create({
+  centeredView: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalView: {
+    // margin: 20,
+    backgroundColor: 'white',
+    borderRadius: 20,
+    padding: 35,
+    alignItems: 'center',
+    shadowColor: '#000',
+    borderColor: '#000',
+    borderWidth: 1,
+    width: '70%',
+    height: '40%',
+  },
+  button: {
+    borderRadius: 20,
+    padding: 10,
+    elevation: 2,
+  },
+  buttonOpen: {
+    backgroundColor: '#F194FF',
+  },
+  buttonClose: {
+    backgroundColor: '#2196F3',
+  },
+  textStyle: {
+    color: 'white',
+    fontWeight: 'bold',
+    textAlign: 'center',
+  },
+  modalText: {
+    marginBottom: 15,
+    textAlign: 'center',
+  },
+});
