@@ -61,3 +61,5 @@ export const KrakenUUIDs = {
     downloadingFirmware: 'Downloading firmware',
   };
   
+
+  export const toasterPerformingUpdate = 'Performing firmware update..';

@@ -1,31 +1,31 @@
+import {useNavigation} from '@react-navigation/native';
+import {ZeroByteFW} from '@zerobytellc/zerobyte-firmware-utils';
 import React, {useEffect, useState} from 'react';
 import {
   Alert,
   Button,
+  Modal,
   PermissionsAndroid,
   Platform,
+  Pressable,
+  StyleSheet,
   Text,
   TouchableOpacity,
   View,
-  Modal,
-  StyleSheet,
-  Pressable,
-  TextInput,
 } from 'react-native';
+import RNFetchBlob from 'rn-fetch-blob';
+import {manager} from '../components/BluetoothManager';
+import PsiComponent from '../components/PsiComponent';
 import {
   BleData,
   ctlDone,
   ctlStart,
+  firmwareUpdateStatusStates,
   krakenDeviceUUID,
   krakenOtaControlAttribute,
   krakenOtaDataAttribute,
   krakenOtaService,
 } from '../kraken/KrakenUUIDs';
-import {manager} from '../components/BluetoothManager';
-import PsiComponent from '../components/PsiComponent';
-import {ZeroByteFW} from '@zerobytellc/zerobyte-firmware-utils';
-import RNFetchBlob from 'rn-fetch-blob';
-import { useNavigation } from '@react-navigation/native';
 
 const Home = () => {
   const [deviceList, setDeviceList] = useState([]);
@@ -33,8 +33,9 @@ const Home = () => {
   const [modalVisible, setModalVisible] = useState(false);
   const [selectedDevice, setSelectedDevice] = useState(null);
   const [newDisplayName, setNewDisplayName] = useState('...');
-const navigation = useNavigation()
-  const [showModalUpdateName,setShowModalUpdateName] = useState(false)
+  const [firmwareUpdateStatus, setFirmwareUpdateStatus] = useState();
+  const navigation = useNavigation();
+  const [showModalUpdateName, setShowModalUpdateName] = useState(false);
   var Buffer = require('buffer/').Buffer;
   // Request Bluetooth permissions
   const requestBluetoothPermission = async () => {
@@ -88,6 +89,13 @@ const navigation = useNavigation()
         if (error || !device.name) return;
 
         const isKraken = device.serviceUUIDs?.includes(krakenDeviceUUID);
+
+        const krakenInDFU =
+          device?.localName === 'Kraken_DFU' || device?.name === 'Kraken_DFU';
+        if (krakenInDFU) {
+          updateDeviceList(device, '---');
+        }
+
         if (isKraken) {
           await handleDeviceConnection(device);
         }
@@ -183,66 +191,55 @@ const navigation = useNavigation()
 
     return modules;
   };
-  //   const performDFU = async () => {
-  //   console.log(`Performing firmware update for ${selectedDevice?.deviceName} : ${selectedDevice?.deviceId}`);
-  //   let firmwarePaths = await getFirmwareFile('kraken');
-  //   //get  path of the file in an array
-  //   console.log( "Success Path---->",firmwarePaths);
-
-  //   if(firmwarePaths){
-
-  //   for (let i = firmwarePaths.length - 1; i >= 0; --i) {
-  //     let fileCountMsg = `[${firmwarePaths.length - i} of ${firmwarePaths.length}]`;
-  // console.log('fileCountMsg---->', fileCountMsg)
-  //     let firmwarePath = firmwarePaths[i];
-  //     try {
-  //  await manager.cancelDeviceConnection(selectedDevice?.deviceId)
-
-  //     } catch (error) {
-  //       console.log("Dis connecting error", error);
-  //     }
-
-  //   await readFileAndStartFlashing(
-  //       deviceId,
-  //       firmwarePath,
-  //       [firmwarePaths.length - i, firmwarePaths.length],
-  //     ).then(result => {
-  //      console.log('result', result)
-  //     })
-  //   }
-  // }
-
-  //   return result ? 1 : 0;
-  //   }
-
   const performDFU = async () => {
-
+    console.log(
+      `Performing firmware update for ${selectedDevice?.deviceName} : ${selectedDevice?.deviceId}`,
+    );
     let firmwarePaths = await getFirmwareFile('kraken');
+    //get  path of the file in an array
+    console.log('Success Path---->', firmwarePaths);
 
+    let result = true;
+    let skipReboot = false;
 
-    if (!firmwarePaths || firmwarePaths.length === 0) {
-      console.log('No firmware paths found.');
-      return 0;
+    if (selectedDevice?.deviceName.includes('DFU')) {
+      skipReboot = true;
     }
-    let result = false; 
-    for (let i = firmwarePaths.length - 1; i >= 0; --i) {
+    if (selectedDevice?.deviceName == 'RE XXXXXXXX') {
+      skipReboot = true;
+    } else if (selectedDevice?.deviceName == 'Kraken XXXXXXXX') {
+      skipReboot = true;
+    }
+
+    for (let i = firmwarePaths.length - 1; result && i >= 0; --i) {
       let fileCountMsg = `[${firmwarePaths.length - i} of ${
         firmwarePaths.length
       }]`;
-      console.log('fileCountMsg---->', fileCountMsg);
-      let firmwarePath = firmwarePaths[i];
 
+      let firmwarePath = firmwarePaths[i];
       try {
-        result = await readFileAndStartFlashing(
-          selectedDevice?.deviceId, // Ensure you're passing the correct deviceId
-          firmwarePath,
-          [firmwarePaths.length - i, firmwarePaths.length],
-        );
-        // console.log('Flashing result:----->', result);
+        manager.cancelTransaction(selectedDevice?.deviceId);
+        await disconnectDevice(selectedDevice?.deviceId);
       } catch (error) {
-        console.log('Flashing error', error);
-        continue; // Skip to next firmware path if flashing fails
+        console.log('Dis connecting error', error);
       }
+
+      await readFileAndStartFlashing(
+        selectedDevice?.deviceId,
+        firmwarePath,
+        skipReboot[(firmwarePaths.length - i, firmwarePaths.length)],
+      ).then(result => {
+        return new Promise(resolve => {
+          // Waiting some time for device to reboot after installation...
+          setFirmwareUpdateStatus({
+            status: firmwareUpdateStatusStates.rebootingDevice,
+          });
+          setTimeout(() => {
+            resolve(result);
+          }, 2500);
+        });
+      });
+      skipReboot = true;
     }
 
     return result ? 1 : 0;
@@ -251,18 +248,16 @@ const navigation = useNavigation()
   const readFileAndStartFlashing = async function (
     deviceId,
     firmwarePath,
+    skipReboot,
     steps,
   ) {
-    console.log('firmwarePath---Reading->', firmwarePath);
+
     let firmwareBytes = await readFirmwareBytes(firmwarePath);
-    console.log('firmwarePath---Reading->', firmwarePath);
-    if (firmwareBytes) {
-      return beginDFU(deviceId, firmwareBytes, steps);
-    }
+
+    return beginDFU(deviceId, firmwareBytes, skipReboot, steps);
   };
 
   const readFirmwareBytes = async function (filePath) {
-
     let stats = await RNFetchBlob.fs.stat(`${filePath}`);
     let firmwareSize = stats.size;
     let firmwareBuffer = new ArrayBuffer(firmwareSize);
@@ -295,52 +290,74 @@ const navigation = useNavigation()
     return firmwareBytes;
   };
 
-  
-
-
-
-  const beginDFU = async (deviceId, firmwareBytes) => {
+  const beginDFU = async (deviceId, firmwareBytes, skipReboot, steps) => {
     let totalBytesWritten = 0;
-  
+
     try {
-
-       const result = await establishConnectionWithDevice(deviceId);
-      console.log('Device connection established. Starting firmware update...',result);
-      if(result){
-          const uploadProcessResult =  await otaBeginUploadProcess(deviceId);
-          console.log('uploadProcessResult------->',uploadProcessResult )
-          if(uploadProcessResult){
-            console.log(`Starting to write ${firmwareBytes?.length || 0} bytes. Please wait...`);
-  totalBytesWritten = await writeFirmwareBlocksToDevice(deviceId, Array.from(firmwareBytes));
-  console.log('totalBytesWritten------>', totalBytesWritten)
-  if(totalBytesWritten){
- await finishUpDFU(deviceId);
-
-// await manager.cancelDeviceConnection(deviceId)
-  }
-          }
+      console.log('Connecting to device');
+      try {
+        await establishConnectionWithDevice(deviceId);
+      } catch (error) {
+        console.log('Some error while attempting connection ', error);
       }
 
-  
-      console.log('Firmware update completed. Disconnecting from device...');
-  
-      // Finish up the DFU process
+      if (!skipReboot) {
+        console.log('Attempting to reboot device into DFU mode');
+        setFirmwareUpdateStatus({
+          status: firmwareUpdateStatusStates.puttingIntoDfu,
+        });
+        await rebootDeviceIntoDFU(deviceId).then(async () => {
+          await disconnectDevice(deviceId);
+          return await establishConnectionWithDevice(deviceId);
+        });
+      }
 
-     
+      await otaBeginUploadProcess(deviceId);
+
+      console.log('Performing update ...Starting to write blocks ...');
+      console.log(
+        'There are ' +
+          firmwareBytes?.length +
+          ' bytes to write. Writing...please wait...',
+      );
+
+      // setFirmwareUpdateStatus({status: firmwareUpdateStatusStates.writingBytes});
+
+      setFirmwareUpdateStatus({status: 'Updating firmware... '});
+
+      totalBytesWritten = await writeFirmwareBlocksToDevice(
+        deviceId,
+        Array.from(firmwareBytes),
+      );
+
+      console.log(
+        'Done writing blocks. Wrote ' + totalBytesWritten + ' bytes.',
+      );
+      console.log('Sending END command to OTA CONTROL.');
+
+      setFirmwareUpdateStatus({status: firmwareUpdateStatusStates.finishUp});
+
+      await finishUpDFU(deviceId);
+
+      console.log('All done!');
+      console.log('Disconnecting from device.');
+
+      await disconnectDevice(deviceId);
     } catch (error) {
-      console.error('Error during DFU process: ', error);
-      throw error;  // Rethrow the error to propagate it up the call stack if necessary
+      console.log('An unexpected error occurred in begin DFU ... ', error);
+      setFirmwareUpdateStatus({status: firmwareUpdateStatusStates.failed});
+      throw error;
     }
-  
+
     return totalBytesWritten === firmwareBytes.length;
   };
-  
+
   const establishConnectionWithDevice = async function (deviceId) {
     return new Promise(resolve => setTimeout(resolve, 1000))
       .then(async () => {
         return await manager.connectToDevice(deviceId, {
           autoConnect: true,
-          requestMTU:  BleData.REQUEST_MTU,
+          requestMTU: BleData.REQUEST_MTU,
         });
       })
       .then(device => {
@@ -348,7 +365,7 @@ const navigation = useNavigation()
       })
       .then(device => {
         console.log('Requesting MTU ' + BleData.REQUEST_MTU);
-        return manager.requestMTUForDevice(device.id,   BleData.REQUEST_MTU);
+        return manager.requestMTUForDevice(device.id, BleData.REQUEST_MTU);
       })
       .then(device => {
         console.log('Negotiated MTU: ' + device.mtu);
@@ -367,35 +384,29 @@ const navigation = useNavigation()
     newValueBuffer.writeUInt8(ctlStart);
 
     try {
-      return manager
-        .writeCharacteristicWithoutResponseForDevice(
-          deviceId,
-          krakenOtaService,
-          krakenOtaControlAttribute,
-          newValueBuffer.toString('base64'),
-        );
+      return manager.writeCharacteristicWithoutResponseForDevice(
+        deviceId,
+        krakenOtaService,
+        krakenOtaControlAttribute,
+        newValueBuffer.toString('base64'),
+      );
     } catch (error) {
       console.log('Error ota begin upload b', error);
     }
   };
 
-  const writeFirmwareBlocksToDevice = async function (
-    deviceId,
-    bytes,
-
-  ) {
+  const writeFirmwareBlocksToDevice = async function (deviceId, bytes) {
     let index = 0;
     let bytesWritten = 0;
     let currentSlice = bytes.slice(index, index + BleData.BLOCK_SIZE);
 
     while (currentSlice.length > 0) {
-
       let isFirstWriteAttempt = true;
       let isWriteSuccessful = false;
 
       while (isFirstWriteAttempt && !isWriteSuccessful) {
         try {
-          await BluetoothManagerInstance.manager
+          await manager
             .writeCharacteristicWithoutResponseForDevice(
               deviceId,
               krakenOtaService,
@@ -408,7 +419,6 @@ const navigation = useNavigation()
             });
 
           isWriteSuccessful = true;
-        
         } catch (error) {
           if (!isFirstWriteAttempt) {
             throw error;
@@ -431,24 +441,24 @@ const navigation = useNavigation()
   const finishUpDFU = function (deviceId) {
     let newValueBuffer = Buffer.alloc(1);
     newValueBuffer.writeUInt8(ctlDone);
-  
-    console.log('krakenOtaService', krakenOtaService)
-    console.log('krakenOtaControlAttribute', krakenOtaControlAttribute)
+
     try {
-      return manager.writeCharacteristicWithResponseForDevice(
-        deviceId,
-        krakenOtaService,
-        krakenOtaControlAttribute,
-        newValueBuffer.toString('base64'),
-      )
-      .then(characteristic => {
-          debugger
-          console.log('Waiting 1000ms after writing CTL_END-------->',characteristic);
+      return manager
+        .writeCharacteristicWithResponseForDevice(
+          deviceId,
+          krakenOtaService,
+          krakenOtaControlAttribute,
+          newValueBuffer.toString('base64'),
+        )
+        .then(characteristic => {
+          console.log(
+            'Waiting 1000ms after writing CTL_END-------->',
+            characteristic,
+          );
           return new Promise(r => setTimeout(r, 1000));
         })
         .catch(error => {
-          debugger
-          console.log('Error occurred during finishing up DFU',error);
+          // console.log('Error occurred during finishing up DFU',error)
 
           return new Promise((r, f) => setTimeout(f, 1000));
         });
@@ -457,9 +467,39 @@ const navigation = useNavigation()
     }
   };
 
+  async function disconnectDevice(deviceId) {
+    console.log('Attempting : disconnection..');
+    let status = await manager
+      .cancelDeviceConnection(deviceId)
+      .then(async () => {
+        console.log('Device has been disconnected successfully');
+        return 'Device has been disconnected successfully';
+      })
+      .catch(error => {
+        console.log(`error while disconnecting : ${error.message}`);
+        return `error while disconnecting : ${error.message}`;
+      });
+    return status;
+  }
 
-       
-  
+  //
+
+  const rebootDeviceIntoDFU = async function (deviceId) {
+    let newValueBuffer = Buffer.alloc(1);
+    newValueBuffer.writeUInt8(ctlStart);
+
+    try {
+      await manager.writeCharacteristicWithResponseForDevice(
+        deviceId,
+        krakenOtaService,
+        krakenOtaControlAttribute,
+        newValueBuffer.toString('base64'),
+      );
+    } catch (error) {
+      console.log('Error occurred rebooting into DFU: ' + error);
+      await disconnectDevice(deviceId);
+    }
+  };
 
   return (
     <View style={{padding: 20}}>
@@ -485,43 +525,38 @@ const navigation = useNavigation()
           <Text>Battery Status: {item.batteryStatus}</Text>
           <PsiComponent deviceId={item.deviceId} />
           <View
-          style={{
-            flexDirection:'row',
-            justifyContent:"space-around"
-          }}
-          >
-            <TouchableOpacity
-            onPress={()=>{
-              navigation.navigate('Deatils',{item})
-            }}
-             style={{
-              width: '30%',
-              justifyContent: 'center',
-              alignItems: 'center',
-              backgroundColor: 'green',
-            }}
-            >
-            
-              <Text>
-              Update Name
-              </Text>
-            </TouchableOpacity>
-
-          {item?.dfuFound && (
+            style={{
+              flexDirection: 'row',
+              justifyContent: 'space-around',
+            }}>
             <TouchableOpacity
               onPress={() => {
-                setSelectedDevice(item);
-                setModalVisible(true);
+                navigation.navigate('Deatils', {item});
               }}
               style={{
-                width: '25%',
+                width: '30%',
                 justifyContent: 'center',
                 alignItems: 'center',
-                backgroundColor: 'orange',
+                backgroundColor: 'green',
               }}>
-              <Text>DFU</Text>
+              <Text>Update Name</Text>
             </TouchableOpacity>
-          )}
+
+            {item?.dfuFound && (
+              <TouchableOpacity
+                onPress={() => {
+                  setSelectedDevice(item);
+                  setModalVisible(true);
+                }}
+                style={{
+                  width: '25%',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  backgroundColor: 'orange',
+                }}>
+                <Text>DFU</Text>
+              </TouchableOpacity>
+            )}
           </View>
 
           <Modal
@@ -557,7 +592,6 @@ const navigation = useNavigation()
               </View>
             </View>
           </Modal>
-
         </View>
       ))}
     </View>
